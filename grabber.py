@@ -35,10 +35,13 @@ import sys, os, traceback, argparse
 import pickle
 import re
 import json
+import logging as l
 import urllib2
+import rfc3987
 
+from bs4 import BeautifulSoup
 from reppy.cache import RobotsCache
-from time import asctime, sleep, strptime, strftime, time
+from time import asctime, gmtime, sleep, strptime, strftime, time
 
 AGENT_DEFAULT = "Paregoricbot/0.1 (+http://www.paregorios.org)"
 MAX_SLEEP = 30 # maximum seconds to sleep if directed by robots.txt
@@ -54,25 +57,57 @@ FORMATS = {
     'json':'/json'
 }
 
-def formatExceptionInfo(maxTBlevel=5):
-     cla, exc, trbk = sys.exc_info()
-     excName = cla.__name__
-     try:
-         excArgs = exc.__dict__["args"]
-     except KeyError:
-         excArgs = "<no args>"
-     excTb = traceback.format_tb(trbk, maxTBlevel)
-     return (excName, excArgs, excTb)
 
 class PlaceSerialization():
     def __init__(self, parent, format):
         self.format = format
         self.uri = parent.uri + FORMATS[format]
-        if args.verbose: print "Initialized serialization (%s: %s)." % ((self.format, self.uri))
+        self.valid = rfc3987.parse(self.uri, rule="absolute_URI")
+        if self.valid:
+            l.debug("Initialized serialization (%s: %s)." % ((self.format, self.uri)))
+        else:
+            l.WARNING("%s is not a valid absolute URI, so this serialization will not be retrieved.")
+
+    def fetch(self):
+        if self.valid:
+            l.debug("Checking robots.txt for access to %s." % self.uri)
+            if robots.allowed(self.uri, args.agent):
+                self.delay = robots.delay(self.uri, args.agent)
+                if self.delay > MAX_SLEEP:
+                    l.error("%s was not fetched because robots delay of %s is greater than MAX_SLEEP(%s)" % ((self.delay, MAX_SLEEP, self.uri)))
+                elif self.delay > 0:
+                    l.debug("Obeying robots.txt directive: sleeping for %s seconds." % self.delay)
+                    sleep(self.delay)
+                    l.debug("Trying to fetch %s." % self.uri)
+                    try: 
+                        req = urllib2.Request(self.uri, None, {"user-agent":args.agent})
+                        opener = urllib2.build_opener()
+                        rsrc = opener.open(req)
+                        if self.format == 'json':
+                            data = json.load(rsrc)
+                            self.datastr = json.dumps(data, ensure_ascii=False)
+                            l.debug("JSON retrieved from %s: %s." % (self.uri, self.datastr))
+                        elif self.format in ['kml', 'rdf', 'xhtml']:
+                            data = BeautifulSoup(rsrc, 'xml')
+                            self.datastr = str(data)
+                            l.debug("%s retrieved from %s: %s." % (self.format, self.uri, self.datastr))
+                        else:
+                            l.error("%s is a format that PlaceSerialization.fetch() doesn't know how to retrieve." % self.format)
+                        rsrc.close()
+                    except:
+                        print "Unexpected error:", sys.exc_info()[0]
+                        raise
+                else:
+                    l.error("%s was not fetched because robots.txt crawl-delay is less than or equal to zero." % s.uri)
+            else:
+                l.error ("%s was not feteched because robots.txt prohibits access to it." % s.uri)
+        else:
+            l.error("%s is not a valid absolute URI, and therefore was skipped.")
+
 
 class Place():
     def __init__(self, pid):
-        if args.verbose: print "Initializing place with pid=%s." % pid
+        l.debug("Initializing place with pid=%s." % pid)
         self.pid = pid
         self.uri = "/".join((args.site, args.placepath, pid))
         self.serials = []
@@ -81,85 +116,51 @@ class Place():
                 self.serials.append(PlaceSerialization(self, f))
 
     def fetchall(self):
-        if args.verbose: print "Attempting to fetch all requested serializations of place with pid=%s." % self.pid
+        l.debug("Attempting to fetch all requested serializations of place with pid=%s." % self.pid)
         for s in self.serials:
-            if args.verbose: print "Checking robots.txt for access to %s." % s.uri
-            if robots.allowed(s.uri, args.agent):
-                s.delay = robots.delay(s.uri, args.agent)
-                if s.delay > MAX_SLEEP:
-                    print "NOFETCH >>> robots delay of %s is greater than MAX_SLEEP(%s): %s" % ((s.delay, MAX_SLEEP, s.uri))
-                elif s.delay > 0:
-                    if args.verbose: print "Obeying robots.txt directive: sleeping for %s seconds." % s.delay
-                    sleep(s.delay)
-                    if args.verbose: "%s is allowed. Trying..." % s.uri
-                    try: 
-                        req = urllib2.Request(s.uri, None, {"user-agent":args.agent})
-                        opener = urllib2.build_opener()
-                        rsrc = opener.open(req)
-                        if s.format == 'json':
-                            s.data = json.load(rsrc)
-                            if args.verbose:
-                                print s.data
-                        elif s.format in ['kml', 'rdf', 'xhtml']:
-                            s.data = BeautifulSoup(rsrc, 'xml')
-                            if args.verbose:
-                                print s.data.prettify()
-                        else:
-                            print "UNKOWNFORMAT"
-                        rsrc.close()
-                    except:
-                        print formatExceptionInfo()
-#            pickle.dump(pjson, outf, pickle.HIGHEST_PROTOCOL)
-                else:
-                    print "NOFETCH >>> robots delay is less than or equal to zero: %s" % s.uri  
-            else:
-                print "NOFETCH >>> robots.txt prohibits access to %s." % s.uri
+            s.fetch()
 
+    def saveall(self, f):
+        l.debug("Attempting to save all requested serializations to output file.")
+        x = {
+            'pid': self.pid,
+            'uri': self.uri
+        }
+        for s in self.serials:
+            x[s.format]=s.datastr
+
+        pickle.dump(x, f, pickle.HIGHEST_PROTOCOL)
 
 
 def main ():
 
     global args
+    global l
     global robots 
     robots = RobotsCache()
     pidfn = args.pidfile
     outfn = args.outfile
-    # test URLs?
-
 
     # open and loop through the contents of the places file
     pf = open(pidfn, "r")
-    if args.verbose: print "Opened input file '%s' for reading." % pidfn
+    l.debug("Opened input file '%s' for reading." % pidfn)
     outf = open(outfn, "w")
-    if args.verbose: print "Opened output file '%s' for writing." % outfn
+    l.debug("Opened output file '%s' for writing." % outfn)
     for (i, line) in enumerate(pf):
         pid = line.rstrip()
         p = Place(pid)
         p.fetchall()
+        p.saveall(outf)
 
-#        if args.verbose: print "sleeping for %s seconds" % delay
-#        sleep(delay)
-#        url = "%s/%s/json" % (placebase, pid)
-#        if robots.allowed(url, agent):
-#            if args.verbose: "%s is allowed. Trying..." % url
-#            try: 
-#                req = urllib2.Request(url, None, {"user-agent":agent})
-#                opener = urllib2.build_opener()
-#                p = opener.open(req)
-#                pjson = json.load(p)
-#                p.close()
-#            except:
-#                print formatExceptionInfo()
-#            if args.verbose: print pjson
-#            pickle.dump(pjson, outf, pickle.HIGHEST_PROTOCOL)
-#        else:
-#            print "DENIED by robots.txt: %s" % url
+
     pf.close()
+    l.debug("Closed input file '%s'." % pidfn)
     outf.close()
+    l.debug("Closed output file '%s'." % outfn)
 
 if __name__ == "__main__":
     try:
-        start_time = time()
+        start_time = gmtime()
         parser = argparse.ArgumentParser(description=SCRIPT_DESC, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
         parser.add_argument ("pidfile", default=PIDFILE_DEFAULT, 
             help="text file containing list of Pleiades IDs (short, numeric form, not URIs)")
@@ -176,11 +177,14 @@ if __name__ == "__main__":
         args = parser.parse_args()
         if not(args.xhtml) and not(args.json) and not(args.kml) and not(args.rdf):
             parser.error ("No grabbable format specified; nothing will be retrieved. Try using -h option for more help.")
-        if args.verbose: print asctime()
+        if args.verbose:
+            l.basicConfig(level=l.DEBUG)
+        else:
+            l.basicConfig(level=l.WARNING)
+        l.debug("Started at %s." % asctime(start_time))
         main()
-        if args.verbose: print asctime()
-        if args.verbose: print "TOTAL TIME IN MINUTES:",
-        if args.verbose: print (time() - start_time) / 60.0
+        end_time = gmtime()
+        l.debug("Finished at %s. Total time in minutes: %s" % ((asctime(end_time), (end_time - start_time) / 60.0)))
         sys.exit(0)
     except KeyboardInterrupt, e: # Ctrl-C
         raise e
