@@ -64,23 +64,6 @@ def formatExceptionInfo(maxTBlevel=5):
      excTb = traceback.format_tb(trbk, maxTBlevel)
      return (excName, excArgs, excTb)
 
-def jout(j):
-    lastmods = j['recent_changes'][0]['modified']
-    lastmoddt = strptime(lastmods)
-    lastmodd = strftime(lastmoddt, '%X')
-    lastmodt = strftime(lastmoddt, '%x')
-    if args.verbose:
-        print "lastmods: %s" % lastmods
-        print "lastmodd: %s" % lastmodd
-        print "lastmodt: %s" % lastmodt
-    lastmodpers = j['recent_changes'][0]['principal']
-    z = '<li>\n' \
-        + '    <a href="http://pleiades.stoa.org/%s">%s</a>: %s (last modified at %s on %s by %s)\n' \
-            % (j['id'], j['title'], j['description'], lastmodt, lastmodd, lastmodpers) \
-        + '</li>\n'
-
-    print z
-
 class PlaceSerialization():
     def __init__(self, parent, format):
         self.format = format
@@ -100,34 +83,33 @@ class Place():
     def fetchall(self):
         if args.verbose: print "Attempting to fetch all requested serializations of place with pid=%s." % self.pid
         for s in self.serials:
+            if args.verbose: print "Checking robots.txt for access to %s." % s.uri
             if robots.allowed(s.uri, args.agent):
-                s = robots.delay(s.uri, args.agent)
-                if s > MAX_SLEEP:
-                    print "NOFETCH >>> robots delay of %s is greater than MAX_SLEEP(%s): %s" % ((s, MAX_SLEEP, s.uri))
-                elif s > 0:
-                    if args.verbose: print "Obeying robots.txt directive: sleeping for %s seconds." % s
-                    sleep(s)
-                    if args.verbose: "%s is allowed. Trying..." % url
-                        try: 
-                            req = urllib2.Request(url, None, {"user-agent":args.agent})
-                            opener = urllib2.build_opener()
-                            rsrc = opener.open(req)
-                            if s.format = 'json':
-                                self.data = json.load(rsrc)
-                            elif s.format = 'xhtml':
-                                soup = BeautifulSoup(rsrc, 'xml')
-                            elif s.format = 'rdf':
-                                pass
-                            elif s.format = 'kml':
-                                pass
-                            else:
-                                print "UNKOWNFORMAT"
-                            
-                p.close()
-            except:
-                print formatExceptionInfo()
-            if args.verbose: print pjson
-            pickle.dump(pjson, outf, pickle.HIGHEST_PROTOCOL)
+                s.delay = robots.delay(s.uri, args.agent)
+                if s.delay > MAX_SLEEP:
+                    print "NOFETCH >>> robots delay of %s is greater than MAX_SLEEP(%s): %s" % ((s.delay, MAX_SLEEP, s.uri))
+                elif s.delay > 0:
+                    if args.verbose: print "Obeying robots.txt directive: sleeping for %s seconds." % s.delay
+                    sleep(s.delay)
+                    if args.verbose: "%s is allowed. Trying..." % s.uri
+                    try: 
+                        req = urllib2.Request(s.uri, None, {"user-agent":args.agent})
+                        opener = urllib2.build_opener()
+                        rsrc = opener.open(req)
+                        if s.format == 'json':
+                            s.data = json.load(rsrc)
+                            if args.verbose:
+                                print s.data
+                        elif s.format in ['kml', 'rdf', 'xhtml']:
+                            s.data = BeautifulSoup(rsrc, 'xml')
+                            if args.verbose:
+                                print s.data.prettify()
+                        else:
+                            print "UNKOWNFORMAT"
+                        rsrc.close()
+                    except:
+                        print formatExceptionInfo()
+#            pickle.dump(pjson, outf, pickle.HIGHEST_PROTOCOL)
                 else:
                     print "NOFETCH >>> robots delay is less than or equal to zero: %s" % s.uri  
             else:
