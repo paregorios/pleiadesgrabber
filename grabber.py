@@ -51,7 +51,7 @@ PLACES_PATH_DEFAULT = "places"
 SCRIPT_DESC = "Grab data from Pleiades using a list of place ids."
 SITE_URL_DEFAULT = "http://pleiades.stoa.org"
 FORMATS = {
-    'xhtml':'',
+    'xhtml':'/',
     'kml':'/kml',
     'rdf':'/rdf',
     'json':'/json'
@@ -146,11 +146,18 @@ def main ():
     l.debug("Opened input file '%s' for reading." % pidfn)
     outf = open(outfn, "w")
     l.debug("Opened output file '%s' for writing." % outfn)
+    placelist = []
     for (i, line) in enumerate(pf):
         pid = line.rstrip()
         p = Place(pid)
         p.fetchall()
-        p.saveall(outf)
+        pd = {}
+        pd['pid']=p.pid
+        pd['uri']=p.uri
+        for s in p.serials:
+            pd[s.format]=s.datastr
+        placelist.append(pd)
+    pickle.dump(placelist, outf, pickle.HIGHEST_PROTOCOL)
 
 
     pf.close()
@@ -184,7 +191,7 @@ if __name__ == "__main__":
         l.debug("Started at %s." % asctime(start_time))
         main()
         end_time = gmtime()
-        l.debug("Finished at %s. Total time in minutes: %s" % ((asctime(end_time), (end_time - start_time) / 60.0)))
+        l.debug("Finished at %s. Total time in minutes: %s" % asctime(end_time))
         sys.exit(0)
     except KeyboardInterrupt, e: # Ctrl-C
         raise e
